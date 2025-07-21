@@ -1,7 +1,20 @@
+# +++ START OF DEBUG CODE +++
+# +++ 调试代码开始 +++
+import torch
+import sys
+print("========================= SCRIPT DEBUG START =========================")
+print(f"Python Executable Path (脚本所使用的Python解释器路径): {sys.executable}")
+print(f"PyTorch Version (PyTorch版本): {torch.__version__}")
+print(f"Is CUDA available inside the script? (脚本内CUDA是否可用?) ---> {torch.cuda.is_available()}")
+print(f"Number of GPUs found by script (脚本找到的GPU数量): {torch.cuda.device_count()}")
+if torch.cuda.is_available():
+    print(f"Current GPU Name (当前GPU名称): {torch.cuda.get_device_name(0)}")
+print("========================== SCRIPT DEBUG END ==========================")
+# +++ END OF DEBUG CODE +++
+
 import argparse
 import os
 import shutil
-import sys
 import time
 import warnings
 from random import sample
@@ -24,7 +37,7 @@ parser.add_argument('data_options', metavar='OPTIONS', nargs='+',
                          'then other options')
 parser.add_argument('--task', choices=['regression', 'classification'],
                     default='regression', help='complete a regression or '
-                                                   'classification task (default: regression)')
+                                                 'classification task (default: regression)')
 parser.add_argument('--disable-cuda', action='store_true',
                     help='Disable CUDA')
 parser.add_argument('-j', '--workers', default=0, type=int, metavar='N',
@@ -40,7 +53,7 @@ parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                                        '0.01)')
 parser.add_argument('--lr-milestones', default=[100], nargs='+', type=int,
                     metavar='N', help='milestones for scheduler (default: '
-                                      '[100])')
+                                       '[100])')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
 parser.add_argument('--weight-decay', '--wd', default=0, type=float,
@@ -51,19 +64,19 @@ parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 train_group = parser.add_mutually_exclusive_group()
 train_group.add_argument('--train-ratio', default=None, type=float, metavar='N',
-                    help='number of training data to be loaded (default none)')
+                       help='number of training data to be loaded (default none)')
 train_group.add_argument('--train-size', default=None, type=int, metavar='N',
                          help='number of training data to be loaded (default none)')
 valid_group = parser.add_mutually_exclusive_group()
 valid_group.add_argument('--val-ratio', default=0.1, type=float, metavar='N',
-                    help='percentage of validation data to be loaded (default '
-                         '0.1)')
+                       help='percentage of validation data to be loaded (default '
+                            '0.1)')
 valid_group.add_argument('--val-size', default=None, type=int, metavar='N',
                          help='number of validation data to be loaded (default '
                               '1000)')
 test_group = parser.add_mutually_exclusive_group()
 test_group.add_argument('--test-ratio', default=0.1, type=float, metavar='N',
-                    help='percentage of test data to be loaded (default 0.1)')
+                      help='percentage of test data to be loaded (default 0.1)')
 test_group.add_argument('--test-size', default=None, type=int, metavar='N',
                         help='number of test data to be loaded (default 1000)')
 
