@@ -51,10 +51,10 @@ parser.add_argument('-b', '--batch-size', default=256, type=int,
                     metavar='N', help='mini-batch size (default: 256)')
 parser.add_argument('--lr', '--learning-rate', default=0.01, type=float,
                     metavar='LR', help='initial learning rate (default: '
-                                       '0.01)')
+                                         '0.01)')
 parser.add_argument('--lr-milestones', default=[100], nargs='+', type=int,
                     metavar='N', help='milestones for scheduler (default: '
-                                       '[100])')
+                                         '[100])')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
 parser.add_argument('--weight-decay', '--wd', default=0, type=float,
@@ -73,8 +73,8 @@ valid_group.add_argument('--val-ratio', default=0.1, type=float, metavar='N',
                          help='percentage of validation data to be loaded (default '
                               '0.1)')
 valid_group.add_argument('--val-size', default=None, type=int, metavar='N',
-                         help='number of validation data to be loaded (default '
-                              '1000)')
+                           help='number of validation data to be loaded (default '
+                                 '1000)')
 test_group = parser.add_mutually_exclusive_group()
 test_group.add_argument('--test-ratio', default=0.1, type=float, metavar='N',
                         help='percentage of test data to be loaded (default 0.1)')
@@ -91,6 +91,8 @@ parser.add_argument('--n-conv', default=3, type=int, metavar='N',
                     help='number of conv layers')
 parser.add_argument('--n-h', default=1, type=int, metavar='N',
                     help='number of hidden layers after pooling')
+parser.add_argument('--threshold', default=-0.9106, type=float, metavar='T',
+                    help='threshold for classification in regression task (default: -0.9106)') # New argument for threshold
 
 args = parser.parse_args(sys.argv[1:])
 
@@ -142,12 +144,12 @@ def main():
     orig_atom_fea_len = structures[0].shape[-1]
     nbr_fea_len = structures[1].shape[-1]
     model = CrystalGraphConvNet(orig_atom_fea_len, nbr_fea_len,
-                                atom_fea_len=args.atom_fea_len,
-                                n_conv=args.n_conv,
-                                h_fea_len=args.h_fea_len,
-                                n_h=args.n_h,
-                                classification=True if args.task ==
-                                'classification' else False)
+                                 atom_fea_len=args.atom_fea_len,
+                                 n_conv=args.n_conv,
+                                 h_fea_len=args.h_fea_len,
+                                 n_h=args.n_h,
+                                 classification=True if args.task ==
+                                 'classification' else False)
     if args.cuda:
         model.cuda()
 
@@ -358,7 +360,7 @@ def validate(val_loader, model, criterion, normalizer, test=False):
             target_normed = normalizer.norm(target)
         else:
             target_normed = target.view(-1).long()
-        
+            
         with torch.no_grad():
             if args.cuda:
                 target_var = Variable(target_normed.cuda(non_blocking=True))
@@ -375,7 +377,8 @@ def validate(val_loader, model, criterion, normalizer, test=False):
             losses.update(loss.data.cpu().item(), target.size(0))
             mae_errors.update(mae_error, target.size(0))
 
-            threshold = -0.9106
+            # Use the threshold from args
+            threshold = args.threshold 
             pred_denorm = normalizer.denorm(output.data.cpu())
             
             # --- 自定义准确率计算 ---
@@ -451,7 +454,7 @@ def validate(val_loader, model, criterion, normalizer, test=False):
         with open('test_results.csv', 'w', newline='') as f:
             writer = csv.writer(f)
             for cif_id, target, pred in zip(test_cif_ids, test_targets,
-                                            test_preds):
+                                             test_preds):
                 writer.writerow((cif_id, target, pred))
     else:
         star_label = '*'
@@ -461,9 +464,11 @@ def validate(val_loader, model, criterion, normalizer, test=False):
               star=star_label, mae_errors=mae_errors, custom_acc=custom_accuracies))
         
         # --- 新增: 打印分类统计结果 ---
-        print(' {star} Correct Positive (>= -0.9106): {correct_pos}/{total_pos}\t'
-              'Correct Negative (< -0.9106): {correct_neg}/{total_neg}'.format(
+        # Use the threshold from args for printing
+        print(' {star} Correct Positive (>= {threshold:.4f}): {correct_pos}/{total_pos}\t'
+              'Correct Negative (< {threshold:.4f}): {correct_neg}/{total_neg}'.format(
               star=star_label,
+              threshold=args.threshold, # Use the threshold from args
               correct_pos=correct_pos_count,
               total_pos=total_pos_count,
               correct_neg=correct_neg_count,
