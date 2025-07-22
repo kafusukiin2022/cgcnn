@@ -4,6 +4,7 @@ import json
 import warnings
 import argparse
 from tqdm import tqdm
+from multiprocessing import Pool, cpu_count
 
 import numpy as np
 import torch
@@ -53,10 +54,69 @@ class AtomCustomJSONInitializer(object):
         return self._embedding[atom_type]
 
 # --- 核心预处理函数 ---
+# 将处理单个CIF文件的逻辑封装成一个函数
+def process_single_cif(args):
+    cif_id, target, root_dir, max_num_nbr, radius, dmin, step, atom_init_file = args
+    
+    # 重新初始化这些对象，因为它们不能在进程间直接共享
+    # 或者可以将它们作为参数传递，但对于当前结构，重新初始化更简单
+    ari = AtomCustomJSONInitializer(atom_init_file)
+    gdf = GaussianDistance(dmin=dmin, dmax=radius, step=step)
 
-def preprocess_data(root_dir, max_num_nbr=12, radius=8, dmin=0, step=0.2):
+    cif_path = os.path.join(root_dir, cif_id + '.cif')
+    processed_dir = os.path.join(root_dir, 'processed')
+
+    if not os.path.exists(cif_path):
+        warnings.warn(f"警告: 文件 '{cif_path}' 未找到，跳过。")
+        return None # 返回 None 表示处理失败或跳过
+
+    try:
+        crystal = Structure.from_file(cif_path)
+        
+        # 获取原子特征
+        atom_fea = np.vstack([ari.get_atom_fea(crystal[i].specie.number)
+                              for i in range(len(crystal))])
+
+        # 获取邻居信息
+        all_nbrs = crystal.get_all_neighbors(radius, include_index=True)
+        all_nbrs = [sorted(nbrs, key=lambda x: x[1]) for nbrs in all_nbrs]
+        
+        nbr_fea_idx, nbr_fea = [], []
+        for nbr in all_nbrs:
+            if len(nbr) < max_num_nbr:
+                # 原始警告在并行环境中可能不好处理，这里简化
+                # warnings.warn(f'ID {cif_id} 未找到足够的邻居来构建图。')
+                nbr_fea_idx.append(list(map(lambda x: x[2], nbr)) +
+                                   [0] * (max_num_nbr - len(nbr)))
+                nbr_fea.append(list(map(lambda x: x[1], nbr)) +
+                               [radius + 1.] * (max_num_nbr - len(nbr)))
+            else:
+                nbr_fea_idx.append(list(map(lambda x: x[2], nbr[:max_num_nbr])))
+                nbr_fea.append(list(map(lambda x: x[1], nbr[:max_num_nbr])))
+
+        nbr_fea_idx = np.array(nbr_fea_idx)
+        nbr_fea = np.array(nbr_fea)
+        nbr_fea = gdf.expand(nbr_fea)
+
+        # 转换为 PyTorch 张量
+        atom_fea = torch.Tensor(atom_fea)
+        nbr_fea = torch.Tensor(nbr_fea)
+        nbr_fea_idx = torch.LongTensor(nbr_fea_idx)
+        target_tensor = torch.Tensor([float(target)])
+
+        # 保存为 .pt 文件
+        save_path = os.path.join(processed_dir, f'{cif_id}.pt')
+        torch.save(((atom_fea, nbr_fea, nbr_fea_idx), target_tensor, cif_id), save_path)
+        return cif_id # 返回成功处理的ID
+    except Exception as e:
+        warnings.warn(f"处理文件 '{cif_path}' 时发生错误: {e}")
+        return None
+
+
+def preprocess_data_parallel(root_dir, max_num_nbr=12, radius=8, dmin=0, step=0.2):
     """
     遍历原始数据集目录，将每个CIF文件转换为PyTorch张量并保存。
+    此版本使用多进程并行处理。
 
     参数:
     ----------
@@ -85,63 +145,27 @@ def preprocess_data(root_dir, max_num_nbr=12, radius=8, dmin=0, step=0.2):
         os.makedirs(processed_dir)
         print(f"创建目录 '{processed_dir}' 用于存放预处理数据。")
 
-    # 3. 初始化原子特征和距离扩展工具
-    ari = AtomCustomJSONInitializer(atom_init_file)
-    gdf = GaussianDistance(dmin=dmin, dmax=radius, step=step)
-
-    # 4. 读取 id_prop.csv 文件
+    # 3. 读取 id_prop.csv 文件
     with open(id_prop_file) as f:
         reader = csv.reader(f)
         id_prop_data = [row for row in reader]
 
-    # 5. 遍历所有CIF文件并进行处理
-    print("开始预处理CIF文件...")
-    for cif_id, target in tqdm(id_prop_data):
-        cif_path = os.path.join(root_dir, cif_id + '.cif')
-        if not os.path.exists(cif_path):
-            warnings.warn(f"警告: 文件 '{cif_path}' 未找到，跳过。")
-            continue
+    # 4. 准备并行任务的参数列表
+    tasks = []
+    for cif_id, target in id_prop_data:
+        tasks.append((cif_id, target, root_dir, max_num_nbr, radius, dmin, step, atom_init_file))
 
-        # --- 这部分逻辑与你原始的 __getitem__ 完全相同 ---
-        crystal = Structure.from_file(cif_path)
-        
-        # 获取原子特征
-        atom_fea = np.vstack([ari.get_atom_fea(crystal[i].specie.number)
-                              for i in range(len(crystal))])
-
-        # 获取邻居信息
-        all_nbrs = crystal.get_all_neighbors(radius, include_index=True)
-        all_nbrs = [sorted(nbrs, key=lambda x: x[1]) for nbrs in all_nbrs]
-        
-        nbr_fea_idx, nbr_fea = [], []
-        for nbr in all_nbrs:
-            if len(nbr) < max_num_nbr:
-                warnings.warn(f'ID {cif_id} 未找到足够的邻居来构建图。'
-                              '如果此警告频繁出现，请考虑增大切割半径(radius)。')
-                nbr_fea_idx.append(list(map(lambda x: x[2], nbr)) +
-                                   [0] * (max_num_nbr - len(nbr)))
-                nbr_fea.append(list(map(lambda x: x[1], nbr)) +
-                               [radius + 1.] * (max_num_nbr - len(nbr)))
-            else:
-                nbr_fea_idx.append(list(map(lambda x: x[2], nbr[:max_num_nbr])))
-                nbr_fea.append(list(map(lambda x: x[1], nbr[:max_num_nbr])))
-
-        nbr_fea_idx = np.array(nbr_fea_idx)
-        nbr_fea = np.array(nbr_fea)
-        nbr_fea = gdf.expand(nbr_fea)
-
-        # 转换为 PyTorch 张量
-        atom_fea = torch.Tensor(atom_fea)
-        nbr_fea = torch.Tensor(nbr_fea)
-        nbr_fea_idx = torch.LongTensor(nbr_fea_idx)
-        target_tensor = torch.Tensor([float(target)])
-
-        # 6. 将处理好的数据保存为 .pt 文件
-        save_path = os.path.join(processed_dir, f'{cif_id}.pt')
-        torch.save(((atom_fea, nbr_fea, nbr_fea_idx), target_tensor, cif_id), save_path)
-
+    # 5. 使用多进程池进行处理
+    print(f"开始使用 {cpu_count()} 个进程并行预处理CIF文件...")
+    with Pool(cpu_count()) as pool: # 使用所有可用的CPU核心
+        # 将 tqdm 包装在 pool.imap 的结果上，而不是 pool.map
+        # 这样 tqdm 就会迭代地消费结果，并显示一个统一的进度条
+        results = list(tqdm(pool.imap_unordered(process_single_cif, tasks), total=len(tasks),
+                            desc="处理CIF文件"))
+    
+    successful_count = sum(1 for r in results if r is not None)
     print("="*50)
-    print(f"🎉 预处理完成！所有数据已保存到 '{processed_dir}' 目录下。")
+    print(f"🎉 预处理完成！成功处理 {successful_count} 个文件，所有数据已保存到 '{processed_dir}' 目录下。")
     print("="*50)
 
 
@@ -160,11 +184,11 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    preprocess_data(
+    # 调用并行版本
+    preprocess_data_parallel(
         root_dir=args.root_dir,
         max_num_nbr=args.max_num_nbr,
         radius=args.radius,
         dmin=args.dmin,
         step=args.step
     )
-
