@@ -18,6 +18,7 @@ import shutil
 import time
 import warnings
 from random import sample
+import csv
 
 import numpy as np
 import torch
@@ -64,19 +65,19 @@ parser.add_argument('--resume', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 train_group = parser.add_mutually_exclusive_group()
 train_group.add_argument('--train-ratio', default=None, type=float, metavar='N',
-                       help='number of training data to be loaded (default none)')
-train_group.add_argument('--train-size', default=None, type=int, metavar='N',
                          help='number of training data to be loaded (default none)')
+train_group.add_argument('--train-size', default=None, type=int, metavar='N',
+                           help='number of training data to be loaded (default none)')
 valid_group = parser.add_mutually_exclusive_group()
 valid_group.add_argument('--val-ratio', default=0.1, type=float, metavar='N',
-                       help='percentage of validation data to be loaded (default '
-                            '0.1)')
+                         help='percentage of validation data to be loaded (default '
+                              '0.1)')
 valid_group.add_argument('--val-size', default=None, type=int, metavar='N',
                          help='number of validation data to be loaded (default '
                               '1000)')
 test_group = parser.add_mutually_exclusive_group()
 test_group.add_argument('--test-ratio', default=0.1, type=float, metavar='N',
-                      help='percentage of test data to be loaded (default 0.1)')
+                        help='percentage of test data to be loaded (default 0.1)')
 test_group.add_argument('--test-size', default=None, type=int, metavar='N',
                         help='number of test data to be loaded (default 1000)')
 
@@ -146,7 +147,7 @@ def main():
                                 h_fea_len=args.h_fea_len,
                                 n_h=args.n_h,
                                 classification=True if args.task ==
-                                                       'classification' else False)
+                                'classification' else False)
     if args.cuda:
         model.cuda()
 
@@ -320,6 +321,8 @@ def validate(val_loader, model, criterion, normalizer, test=False):
     losses = AverageMeter()
     if args.task == 'regression':
         mae_errors = AverageMeter()
+        # --- 新增: 用于存储自定义准确率的Meter ---
+        custom_accuracies = AverageMeter()
     else:
         accuracies = AverageMeter()
         precisions = AverageMeter()
@@ -336,14 +339,13 @@ def validate(val_loader, model, criterion, normalizer, test=False):
 
     end = time.time()
     for i, (input, target, batch_cif_ids) in enumerate(val_loader):
-        if args.cuda:
-            with torch.no_grad():
+        with torch.no_grad():
+            if args.cuda:
                 input_var = (Variable(input[0].cuda(non_blocking=True)),
                              Variable(input[1].cuda(non_blocking=True)),
                              input[2].cuda(non_blocking=True),
                              [crys_idx.cuda(non_blocking=True) for crys_idx in input[3]])
-        else:
-            with torch.no_grad():
+            else:
                 input_var = (Variable(input[0]),
                              Variable(input[1]),
                              input[2],
@@ -352,11 +354,11 @@ def validate(val_loader, model, criterion, normalizer, test=False):
             target_normed = normalizer.norm(target)
         else:
             target_normed = target.view(-1).long()
-        if args.cuda:
-            with torch.no_grad():
+        
+        with torch.no_grad():
+            if args.cuda:
                 target_var = Variable(target_normed.cuda(non_blocking=True))
-        else:
-            with torch.no_grad():
+            else:
                 target_var = Variable(target_normed)
 
         # compute output
@@ -368,6 +370,20 @@ def validate(val_loader, model, criterion, normalizer, test=False):
             mae_error = mae(normalizer.denorm(output.data.cpu()), target)
             losses.update(loss.data.cpu().item(), target.size(0))
             mae_errors.update(mae_error, target.size(0))
+
+            # --- 新增: 计算自定义准确率 ---
+            threshold = -0.9106
+            pred_denorm = normalizer.denorm(output.data.cpu())
+            
+            # 规则: (预测值 < 阈值 且 真实值 < 阈值) 或 (预测值 >= 阈值 且 真实值 >= 阈值) 则为正确
+            correct_mask = ((pred_denorm < threshold) & (target < threshold)) | \
+                           ((pred_denorm >= threshold) & (target >= threshold))
+            
+            # 计算批次准确率并更新
+            accuracy = correct_mask.float().mean()
+            custom_accuracies.update(accuracy.item(), target.size(0))
+            # --- 自定义准确率计算结束 ---
+
             if test:
                 test_pred = normalizer.denorm(output.data.cpu())
                 test_target = target
@@ -397,12 +413,14 @@ def validate(val_loader, model, criterion, normalizer, test=False):
 
         if i % args.print_freq == 0:
             if args.task == 'regression':
+                # --- 修改: 在打印信息中加入自定义准确率 ---
                 print('Test: [{0}/{1}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                       'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                      'MAE {mae_errors.val:.3f} ({mae_errors.avg:.3f})'.format(
+                      'MAE {mae_errors.val:.3f} ({mae_errors.avg:.3f})\t'
+                      'CustomAcc {custom_acc.val:.3f} ({custom_acc.avg:.3f})'.format(
                     i, len(val_loader), batch_time=batch_time, loss=losses,
-                    mae_errors=mae_errors))
+                    mae_errors=mae_errors, custom_acc=custom_accuracies))
             else:
                 print('Test: [{0}/{1}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
@@ -418,8 +436,7 @@ def validate(val_loader, model, criterion, normalizer, test=False):
 
     if test:
         star_label = '**'
-        import csv
-        with open('test_results.csv', 'w') as f:
+        with open('test_results.csv', 'w', newline='') as f:
             writer = csv.writer(f)
             for cif_id, target, pred in zip(test_cif_ids, test_targets,
                                             test_preds):
@@ -427,8 +444,10 @@ def validate(val_loader, model, criterion, normalizer, test=False):
     else:
         star_label = '*'
     if args.task == 'regression':
-        print(' {star} MAE {mae_errors.avg:.3f}'.format(star=star_label,
-                                                        mae_errors=mae_errors))
+        # --- 修改: 在最终结果中加入自定义准确率 ---
+        print(' {star} MAE {mae_errors.avg:.3f}\t'
+              'CustomAcc {custom_acc.avg:.3f}'.format(
+              star=star_label, mae_errors=mae_errors, custom_acc=custom_accuracies))
         return mae_errors.avg
     else:
         print(' {star} AUC {auc.avg:.3f}'.format(star=star_label,
