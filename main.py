@@ -321,8 +321,12 @@ def validate(val_loader, model, criterion, normalizer, test=False):
     losses = AverageMeter()
     if args.task == 'regression':
         mae_errors = AverageMeter()
-        # --- 新增: 用于存储自定义准确率的Meter ---
         custom_accuracies = AverageMeter()
+        # --- 新增: 用于分类统计的计数器 ---
+        total_pos_count = 0
+        correct_pos_count = 0
+        total_neg_count = 0
+        correct_neg_count = 0
     else:
         accuracies = AverageMeter()
         precisions = AverageMeter()
@@ -371,18 +375,27 @@ def validate(val_loader, model, criterion, normalizer, test=False):
             losses.update(loss.data.cpu().item(), target.size(0))
             mae_errors.update(mae_error, target.size(0))
 
-            # --- 新增: 计算自定义准确率 ---
             threshold = -0.9106
             pred_denorm = normalizer.denorm(output.data.cpu())
             
-            # 规则: (预测值 < 阈值 且 真实值 < 阈值) 或 (预测值 >= 阈值 且 真实值 >= 阈值) 则为正确
+            # --- 自定义准确率计算 ---
             correct_mask = ((pred_denorm < threshold) & (target < threshold)) | \
                            ((pred_denorm >= threshold) & (target >= threshold))
-            
-            # 计算批次准确率并更新
             accuracy = correct_mask.float().mean()
             custom_accuracies.update(accuracy.item(), target.size(0))
-            # --- 自定义准确率计算结束 ---
+            
+            # --- 新增: 分类统计 ---
+            pos_mask = target >= threshold
+            neg_mask = target < threshold
+            
+            correct_pos_mask = (pred_denorm >= threshold) & pos_mask
+            correct_neg_mask = (pred_denorm < threshold) & neg_mask
+
+            total_pos_count += pos_mask.sum().item()
+            correct_pos_count += correct_pos_mask.sum().item()
+            total_neg_count += neg_mask.sum().item()
+            correct_neg_count += correct_neg_mask.sum().item()
+            # --- 分类统计结束 ---
 
             if test:
                 test_pred = normalizer.denorm(output.data.cpu())
@@ -413,7 +426,6 @@ def validate(val_loader, model, criterion, normalizer, test=False):
 
         if i % args.print_freq == 0:
             if args.task == 'regression':
-                # --- 修改: 在打印信息中加入自定义准确率 ---
                 print('Test: [{0}/{1}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                       'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
@@ -444,10 +456,18 @@ def validate(val_loader, model, criterion, normalizer, test=False):
     else:
         star_label = '*'
     if args.task == 'regression':
-        # --- 修改: 在最终结果中加入自定义准确率 ---
         print(' {star} MAE {mae_errors.avg:.3f}\t'
               'CustomAcc {custom_acc.avg:.3f}'.format(
               star=star_label, mae_errors=mae_errors, custom_acc=custom_accuracies))
+        
+        # --- 新增: 打印分类统计结果 ---
+        print(' {star} Correct Positive (>= -0.9106): {correct_pos}/{total_pos}\t'
+              'Correct Negative (< -0.9106): {correct_neg}/{total_neg}'.format(
+              star=star_label,
+              correct_pos=correct_pos_count,
+              total_pos=total_pos_count,
+              correct_neg=correct_neg_count,
+              total_neg=total_neg_count))
         return mae_errors.avg
     else:
         print(' {star} AUC {auc.avg:.3f}'.format(star=star_label,
