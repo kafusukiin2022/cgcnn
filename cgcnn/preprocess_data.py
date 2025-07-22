@@ -3,7 +3,6 @@ import csv
 import json
 import warnings
 import argparse
-# Import process_map from tqdm.contrib.concurrent
 from tqdm.contrib.concurrent import process_map
 from multiprocessing import cpu_count
 
@@ -60,6 +59,9 @@ def process_single_cif(args):
     
     # Re-initialize these objects for each process as they are not shareable across processes directly.
     # This is a common pattern when using multiprocessing with objects that can't be pickled.
+    # Note: If `AtomCustomJSONInitializer` and `GaussianDistance` were truly immutable and small,
+    # they could be passed to `initializer` and `initargs` in `Pool` if you were managing the Pool directly.
+    # For `process_map`, re-initialization per process is the typical workaround for non-picklable objects.
     ari = AtomCustomJSONInitializer(atom_init_file)
     gdf = GaussianDistance(dmin=dmin, dmax=radius, step=step)
 
@@ -154,22 +156,23 @@ def preprocess_data_parallel(root_dir, max_num_nbr=12, radius=8, dmin=0, step=0.
     for cif_id, target in id_prop_data:
         tasks.append((cif_id, target, root_dir, max_num_nbr, radius, dmin, step, atom_init_file))
 
+    # Calculate miniters for approximately 4% updates
+    total_tasks = len(tasks)
+    # Ensure miniters is at least 1 to avoid division by zero or overly frequent updates for small datasets
+    min_iterations_for_update = max(1, int(total_tasks * 0.04)) 
+
     # 5. Use process_map for multiprocessing with a single, controlled progress bar
     print(f"Starting parallel preprocessing of CIF files using {cpu_count()} processes...")
     
-    # process_map handles the Pool creation and tqdm integration automatically.
-    # mininterval and miniters control the refresh rate and can achieve a similar effect
-    # to "print every 4%" by limiting how often updates occur.
-    # However, forcing exactly 25 updates (4% intervals) is not a direct parameter
-    # for tqdm's auto-refresh, but limiting frequency will reduce output.
     results = process_map(
         process_single_cif,
         tasks,
         max_workers=cpu_count(), # Use all available CPU cores
         chunksize=1,             # Smaller chunksize can sometimes provide smoother updates for fast tasks
         desc="Processing CIF files",
-        mininterval=1.0          # Minimum progress display update interval (in seconds). Adjust as needed.
-                                 # This helps reduce the printing frequency.
+        mininterval=1.0,         # Minimum progress display update interval (in seconds).
+                                 # Set a reasonable interval to prevent excessive updates.
+        miniters=min_iterations_for_update # Update after this many iterations have passed.
     )
     
     successful_count = sum(1 for r in results if r is not None)
